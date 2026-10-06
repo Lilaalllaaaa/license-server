@@ -1,6 +1,6 @@
 from fastapi import FastAPI
 import sqlite3
-from datetime import datetime
+from datetime import datetime, timedelta
 
 app = FastAPI()
 DB_NAME = "licenses.db"
@@ -23,7 +23,7 @@ init_db()
 
 @app.get("/")
 def home():
-    return {"status": "online", "message": "Server Van Long Media dang hoat dong!"}
+    return {"status": "online", "message": "Server Van Long Media đang hoạt động!"}
 
 @app.get("/verify-key")
 def verify_key(key: str = "", hwid: str = ""):
@@ -71,8 +71,6 @@ def create_key(key: str, days: int = 30):
     conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
     
-    # Tính ngày hết hạn
-    from datetime import timedelta
     expire_time = (datetime.now() + timedelta(days=days)).strftime("%Y-%m-%d %H:%M:%S")
     
     try:
