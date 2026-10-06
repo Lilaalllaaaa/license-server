@@ -1,13 +1,23 @@
 from fastapi import FastAPI
-from pydantic import BaseModel
+from fastapi.middleware.cors import CORSMiddleware
 import sqlite3
 from datetime import datetime, timedelta
 import uvicorn
 
 app = FastAPI(title="Văn Long License Management Server")
+
+# Cấu hình CORS để cho phép mọi Client kết nối không bị chặn
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
 DB_NAME = "licenses.db"
 
-# Khởi tạo Database SQLite lưu danh sách Key
+# Khởi tạo Database SQLite
 def init_db():
     conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
@@ -15,7 +25,6 @@ def init_db():
         CREATE TABLE IF NOT EXISTS keys (
             key TEXT PRIMARY KEY,
             registered_hwid TEXT,
-            registered_ip TEXT,
             expires_at TEXT,
             status TEXT DEFAULT 'active'
         )
@@ -25,19 +34,15 @@ def init_db():
 
 init_db()
 
-# Cấu trúc dữ liệu gửi lên từ Client
-class VerifyRequest(BaseModel):
-    key: str
-    hwid: str
-    ip: str
+@app.get("/")
+def home():
+    return {"status": "online", "message": "Văn Long License Server is running!"}
 
-# API Tạo Key mới (Dành cho bạn tạo/bán Key)
+# 1. API Tạo Key mới
 @app.get("/create-key")
 def create_key(key: str, days: int = 30):
     conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
-    
-    # Tính ngày hết hạn
     expire_date = (datetime.now() + timedelta(days=days)).strftime("%Y-%m-%d %H:%M:%S")
     
     try:
@@ -49,52 +54,46 @@ def create_key(key: str, days: int = 30):
         conn.close()
         return {"status": "error", "message": "Key này đã tồn tại trên hệ thống!"}
 
-# API Xác thực Key (Gọi từ App của khách)
-@app.post("/verify-key")
-def verify_key(data: VerifyRequest):
+# 2. API Xác thực Key (Dùng GET Query Parameters: /verify-key?key=...&hwid=...)
+@app.get("/verify-key")
+def verify_key(key: str, hwid: str):
     conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
     
-    cursor.execute("SELECT registered_hwid, registered_ip, expires_at, status FROM keys WHERE key = ?", (data.key,))
+    cursor.execute("SELECT registered_hwid, expires_at, status FROM keys WHERE key = ?", (key,))
     row = cursor.fetchone()
     
     if not row:
         conn.close()
         return {"status": "error", "message": "Key không tồn tại trên hệ thống!"}
         
-    registered_hwid, registered_ip, expires_at, status = row
+    registered_hwid, expires_at, status = row
     
-    # 1. Kiểm tra trạng thái Key
+    # Kiểm tra trạng thái
     if status != 'active':
         conn.close()
         return {"status": "error", "message": "Key đã bị khóa hoặc vô hiệu hóa!"}
         
-    # 2. Kiểm tra ngày hết hạn
+    # Kiểm tra ngày hết hạn
     expire_dt = datetime.strptime(expires_at, "%Y-%m-%d %H:%M:%S")
     if datetime.now() > expire_dt:
         conn.close()
         return {"status": "error", "message": f"Key đã hết hạn sử dụng vào {expires_at}!"}
         
-    # 3. Kiểm tra HWID & IP (Kích hoạt lần đầu hoặc So sánh)
-    if not registered_hwid and not registered_ip:
-        # Lần đầu kích hoạt -> Khóa cứng HWID và IP này lại
-        cursor.execute("UPDATE keys SET registered_hwid = ?, registered_ip = ? WHERE key = ?", (data.hwid, data.ip, data.key))
+    # Kích hoạt lần đầu -> Đăng ký HWID máy tính
+    if not registered_hwid:
+        cursor.execute("UPDATE keys SET registered_hwid = ? WHERE key = ?", (hwid, key))
         conn.commit()
         conn.close()
         return {"status": "success", "message": f"Kích hoạt thành công thiết bị mới! Hạn dùng: {expires_at}"}
     
-    # Kiểm tra xem có đúng máy và đúng IP không
-    if registered_hwid != data.hwid:
+    # Kiểm tra xem có đúng HWID máy tính cũ không
+    if registered_hwid != hwid:
         conn.close()
-        return {"status": "error", "message": "Key này đang được sử dụng trên máy tính (HWID) khác!"}
-        
-    if registered_ip != data.ip:
-        conn.close()
-        return {"status": "error", "message": f"Địa chỉ IP không khớp! (Đã đăng ký với IP: {registered_ip})"}
+        return {"status": "error", "message": "Key này đang được sử dụng trên máy tính khác!"}
 
     conn.close()
     return {"status": "success", "message": f"Xác thực thành công! Hạn dùng đến {expires_at}"}
 
-# Đoạn khởi chạy Server tự động
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=8000)
